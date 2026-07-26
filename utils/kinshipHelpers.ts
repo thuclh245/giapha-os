@@ -19,6 +19,7 @@ export interface PersonNode {
   birth_order: number | null;
   generation: number | null;
   is_in_law: boolean;
+  note?: string | null;
 }
 
 interface RelEdge {
@@ -26,6 +27,9 @@ interface RelEdge {
   person_a: string;
   person_b: string;
 }
+
+const COMMON_FOUNDER_ID = "__common_lineage_founder__";
+const COMMON_FOUNDRESS_ID = "__common_lineage_foundress__";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -50,6 +54,263 @@ function compareSeniority(
   }
 
   return "equal";
+}
+
+function getLineageHeadBranch(person: PersonNode): number | null {
+  const match = person.note?.match(/Người đứng đầu\s*Chi\s*(?:[:#]\s*)?(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function getFounderTerm(
+  person: PersonNode,
+  spouseMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+): string | null {
+  if (getLineageHeadBranch(person) != null) {
+    return person.gender === "female" ? "Bà tổ" : "Ông tổ";
+  }
+
+  const hasHeadSpouse = (spouseMap.get(person.id) ?? []).some((spouseId) => {
+    const spouse = personsMap.get(spouseId);
+    return spouse ? getLineageHeadBranch(spouse) != null : false;
+  });
+
+  if (!hasHeadSpouse) return null;
+  return person.gender === "female" ? "Bà tổ" : "Ông tổ";
+}
+
+function getAncestorDepth(
+  descendantId: string,
+  ancestorId: string,
+  parentMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+): number | null {
+  const ancestry = getAncestryData(descendantId, parentMap, personsMap);
+  const match = ancestry.get(ancestorId);
+  if (!match || match.depth === 0) return null;
+  return match.depth;
+}
+
+function isAncestorOrFounderSpouse(
+  descendantId: string,
+  ancestorId: string,
+  parentMap: Map<string, string[]>,
+  spouseMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+): boolean {
+  if (getAncestorDepth(descendantId, ancestorId, parentMap, personsMap) != null) {
+    return true;
+  }
+
+  return (spouseMap.get(ancestorId) ?? []).some((spouseId) => {
+    const spouse = personsMap.get(spouseId);
+    return (
+      spouse != null &&
+      getLineageHeadBranch(spouse) != null &&
+      getAncestorDepth(descendantId, spouseId, parentMap, personsMap) != null
+    );
+  });
+}
+
+function applyFounderTerms(
+  result: KinshipResult,
+  personA: PersonNode,
+  personB: PersonNode,
+  parentMap: Map<string, string[]>,
+  spouseMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+): KinshipResult {
+  const founderTermA = getFounderTerm(personA, spouseMap, personsMap);
+  const founderTermB = getFounderTerm(personB, spouseMap, personsMap);
+  let aCallsB = result.aCallsB;
+  let bCallsA = result.bCallsA;
+  const pathLabels = [...result.pathLabels];
+
+  if (
+    founderTermB &&
+    isAncestorOrFounderSpouse(
+      personA.id,
+      personB.id,
+      parentMap,
+      spouseMap,
+      personsMap,
+    )
+  ) {
+    aCallsB = founderTermB;
+    pathLabels.push(`${personB.full_name} là ${founderTermB} của Chi.`);
+  }
+
+  if (
+    founderTermA &&
+    isAncestorOrFounderSpouse(
+      personB.id,
+      personA.id,
+      parentMap,
+      spouseMap,
+      personsMap,
+    )
+  ) {
+    bCallsA = founderTermA;
+    pathLabels.push(`${personA.full_name} là ${founderTermA} của Chi.`);
+  }
+
+  if (aCallsB === result.aCallsB && bCallsA === result.bCallsA) {
+    return result;
+  }
+
+  return {
+    ...result,
+    aCallsB,
+    bCallsA,
+    description: `${result.description} - Quy ước đầu Chi`,
+    pathLabels,
+  };
+}
+
+function getSpouseRole(person: PersonNode): string {
+  return person.gender === "male" ? "Chồng" : "Vợ";
+}
+
+function addCommonLineageFounders(
+  personsMap: Map<string, PersonNode>,
+  parentMap: Map<string, string[]>,
+  spouseMap: Map<string, string[]>,
+) {
+  const explicitLineageHeads = [...personsMap.values()].filter(
+    (person) => getLineageHeadBranch(person) != null,
+  );
+  const lineageHeads =
+    explicitLineageHeads.length > 0
+      ? explicitLineageHeads
+      : [...personsMap.values()].filter(
+          (person) => person.generation === 1 && !person.is_in_law,
+        );
+
+  if (lineageHeads.length < 2) return;
+
+  personsMap.set(COMMON_FOUNDER_ID, {
+    id: COMMON_FOUNDER_ID,
+    full_name: "Ông/Bà tổ chung dòng họ",
+    gender: "male",
+    birth_year: null,
+    birth_order: null,
+    generation: 0,
+    is_in_law: false,
+    note: "Tổ tiên chung ảo dùng để nối các Chi khi dữ liệu không ghi rõ đời trên.",
+  });
+  personsMap.set(COMMON_FOUNDRESS_ID, {
+    id: COMMON_FOUNDRESS_ID,
+    full_name: "Bà tổ chung dòng họ",
+    gender: "female",
+    birth_year: null,
+    birth_order: null,
+    generation: 0,
+    is_in_law: false,
+    note: "Tổ tiên chung ảo dùng để nối các Chi khi dữ liệu không ghi rõ đời trên.",
+  });
+  spouseMap.set(COMMON_FOUNDER_ID, [COMMON_FOUNDRESS_ID]);
+  spouseMap.set(COMMON_FOUNDRESS_ID, [COMMON_FOUNDER_ID]);
+
+  for (const head of lineageHeads) {
+    const parents = parentMap.get(head.id) ?? [];
+    if (!parents.includes(COMMON_FOUNDER_ID)) {
+      parents.push(COMMON_FOUNDER_ID);
+    }
+    if (!parents.includes(COMMON_FOUNDRESS_ID)) {
+      parents.push(COMMON_FOUNDRESS_ID);
+    }
+    parentMap.set(head.id, parents);
+  }
+}
+
+function resolveCoSpouseKinship(
+  personA: PersonNode,
+  personB: PersonNode,
+  spouseMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+  personIndex: Map<string, number>,
+): KinshipResult | null {
+  const sharedSpouseId = (spouseMap.get(personA.id) ?? []).find((spouseId) =>
+    (spouseMap.get(personB.id) ?? []).includes(spouseId),
+  );
+  if (!sharedSpouseId) return null;
+
+  const sharedSpouse = personsMap.get(sharedSpouseId);
+  if (!sharedSpouse) return null;
+
+  const spousesOfSharedPerson = spouseMap.get(sharedSpouseId) ?? [];
+  const orderA = spousesOfSharedPerson.indexOf(personA.id);
+  const orderB = spousesOfSharedPerson.indexOf(personB.id);
+  const seniority = compareSeniority(personA, personB);
+  const isASenior =
+    orderA !== -1 && orderB !== -1 && orderA !== orderB
+      ? orderA < orderB
+      : seniority === "senior" ||
+        (seniority === "equal" &&
+          (personIndex.get(personA.id) ?? Infinity) <
+            (personIndex.get(personB.id) ?? Infinity));
+
+  return {
+    aCallsB: isASenior ? "Em" : "Chị",
+    bCallsA: isASenior ? "Chị" : "Em",
+    description: `Quan hệ đồng phối ngẫu của ${sharedSpouse.full_name}`,
+    distance: 0,
+    pathLabels: [
+      `${personA.full_name} là ${getSpouseRole(personA)} của ${sharedSpouse.full_name}.`,
+      `${personB.full_name} là ${getSpouseRole(personB)} của ${sharedSpouse.full_name}.`,
+    ],
+  };
+}
+
+function resolveCoupleParentKinship(
+  personA: PersonNode,
+  personB: PersonNode,
+  parentMap: Map<string, string[]>,
+  spouseMap: Map<string, string[]>,
+  personsMap: Map<string, PersonNode>,
+): KinshipResult | null {
+  const parentsOfA = parentMap.get(personA.id) ?? [];
+  const parentsOfB = parentMap.get(personB.id) ?? [];
+
+  const parentOfA = parentsOfA.find((parentId) =>
+    (spouseMap.get(personB.id) ?? []).includes(parentId),
+  );
+  if (parentOfA) {
+    const parent = personsMap.get(parentOfA);
+    return {
+      aCallsB: personB.gender === "female" ? "Mẹ" : "Bố",
+      bCallsA: "Con",
+      description: "Quan hệ con của cặp vợ chồng",
+      distance: 1,
+      pathLabels: parent
+        ? [
+            `${personA.full_name} là con của ${parent.full_name}.`,
+            `${personB.full_name} là ${getSpouseRole(personB)} của ${parent.full_name}.`,
+          ]
+        : [],
+    };
+  }
+
+  const parentOfB = parentsOfB.find((parentId) =>
+    (spouseMap.get(personA.id) ?? []).includes(parentId),
+  );
+  if (parentOfB) {
+    const parent = personsMap.get(parentOfB);
+    return {
+      aCallsB: "Con",
+      bCallsA: personA.gender === "female" ? "Mẹ" : "Bố",
+      description: "Quan hệ con của cặp vợ chồng",
+      distance: 1,
+      pathLabels: parent
+        ? [
+            `${personB.full_name} là con của ${parent.full_name}.`,
+            `${personA.full_name} là ${getSpouseRole(personA)} của ${parent.full_name}.`,
+          ]
+        : [],
+    };
+  }
+
+  return null;
 }
 
 // ── Vietnamese Terminology Constants ──────────────────────────────────────
@@ -388,6 +649,7 @@ export function computeKinship(
   if (personA.id === personB.id) return null;
 
   const personsMap = new Map(persons.map((p) => [p.id, p]));
+  const personIndex = new Map(persons.map((p, index) => [p.id, index]));
   const parentMap = new Map<string, string[]>();
   const spouseMap = new Map<string, string[]>();
 
@@ -405,6 +667,7 @@ export function computeKinship(
       spouseMap.set(r.person_b, sB);
     }
   }
+  addCommonLineageFounders(personsMap, parentMap, spouseMap);
 
   // 0. Kiểm tra quan hệ hôn nhân trực tiếp
   const spousesA = spouseMap.get(personA.id) ?? [];
@@ -418,11 +681,50 @@ export function computeKinship(
     };
   }
 
-  // 1. Kiểm tra quan hệ huyết thống
-  const blood = findBloodKinship(personA, personB, personsMap, parentMap);
-  if (blood) return blood;
+  // 1. Kiểm tra hai người cùng là vợ/chồng của một người.
+  const coSpouse = resolveCoSpouseKinship(
+    personA,
+    personB,
+    spouseMap,
+    personsMap,
+    personIndex,
+  );
+  if (coSpouse) return coSpouse;
 
-  // 2. Kiểm tra quan hệ thông qua hôn nhân của A
+  // 2. Nếu một người là con của cặp vợ chồng, coi người phối ngẫu của bố/mẹ
+  // là bố/mẹ trong phạm vi gia phả, không tách riêng mẹ đẻ/mẹ kế.
+  const coupleParent = resolveCoupleParentKinship(
+    personA,
+    personB,
+    parentMap,
+    spouseMap,
+    personsMap,
+  );
+  if (coupleParent) {
+    return applyFounderTerms(
+      coupleParent,
+      personA,
+      personB,
+      parentMap,
+      spouseMap,
+      personsMap,
+    );
+  }
+
+  // 3. Kiểm tra quan hệ huyết thống
+  const blood = findBloodKinship(personA, personB, personsMap, parentMap);
+  if (blood) {
+    return applyFounderTerms(
+      blood,
+      personA,
+      personB,
+      parentMap,
+      spouseMap,
+      personsMap,
+    );
+  }
+
+  // 4. Kiểm tra quan hệ thông qua hôn nhân của A
   for (const sId of spousesA) {
     if (sId === personB.id) continue; // Đã xử lý ở bước 0
     const spouseA = personsMap.get(sId);
@@ -520,7 +822,7 @@ export function computeKinship(
     }
   }
 
-  // 3. Kiểm tra quan hệ thông qua hôn nhân của B
+  // 5. Kiểm tra quan hệ thông qua hôn nhân của B
   const spousesB = spouseMap.get(personB.id) ?? [];
   for (const sId of spousesB) {
     const spouseB = personsMap.get(sId);
@@ -611,7 +913,7 @@ export function computeKinship(
     }
   }
 
-  // 4. Kiểm tra quan hệ thông qua cả hôn nhân của A và B
+  // 6. Kiểm tra quan hệ thông qua cả hôn nhân của A và B
   for (const sIdA of spousesA) {
     const spouseA = personsMap.get(sIdA);
     if (!spouseA) continue;

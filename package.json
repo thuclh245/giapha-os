@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "kinship:generate": "node scripts/generate-kinship-index.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.3",

@@ -11,7 +11,7 @@ export default async function KinshipPage() {
   const { data: persons } = await supabase
     .from("persons")
     .select(
-      "id, full_name, gender, birth_year, birth_order, generation, is_in_law, avatar_url",
+      "id, full_name, gender, birth_year, birth_order, generation, is_in_law, avatar_url, note",
     )
     .order("birth_year", { ascending: true, nullsFirst: false });
 
