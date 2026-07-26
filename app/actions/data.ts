@@ -123,6 +123,62 @@ function sanitizeCustomEvent(
   };
 }
 
+function inferBirthOrdersFromRelationshipOrder(
+  persons: PersonExport[],
+  relationships: Array<RelationshipExport | Relationship>,
+): PersonExport[] {
+  const nextPersons = persons.map((p) => ({ ...p }));
+  const personsById = new Map(nextPersons.map((p) => [p.id, p]));
+  const parentChildren = new Map<string, string[]>();
+
+  for (const r of relationships) {
+    if (r.type !== "biological_child" && r.type !== "adopted_child") continue;
+    if (!r.person_a || !r.person_b) continue;
+
+    if (!parentChildren.has(r.person_a)) parentChildren.set(r.person_a, []);
+    const children = parentChildren.get(r.person_a)!;
+    if (!children.includes(r.person_b)) {
+      children.push(r.person_b);
+    }
+  }
+
+  for (const [, childIds] of parentChildren) {
+    const sourceOrder = new Map(childIds.map((id, index) => [id, index]));
+    const sorted = [...childIds].sort((a, b) => {
+      const pa = personsById.get(a);
+      const pb = personsById.get(b);
+
+      const aOrder = pa?.birth_order ?? null;
+      const bOrder = pb?.birth_order ?? null;
+      if (aOrder != null && bOrder != null && aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+
+      const aYear = pa?.birth_year ?? Infinity;
+      const bYear = pb?.birth_year ?? Infinity;
+      if (aYear !== bYear) return aYear - bYear;
+
+      const aSourceOrder = sourceOrder.get(a) ?? Infinity;
+      const bSourceOrder = sourceOrder.get(b) ?? Infinity;
+      if (aSourceOrder !== bSourceOrder) return aSourceOrder - bSourceOrder;
+
+      return (pa?.full_name ?? "").localeCompare(pb?.full_name ?? "", "vi");
+    });
+
+    let order = 1;
+    for (const childId of sorted) {
+      const child = personsById.get(childId);
+      if (!child || child.is_in_law) continue;
+      if (child.birth_order == null) {
+        child.birth_order = order;
+      }
+      order++;
+    }
+  }
+
+  return nextPersons;
+}
+
 // ─── Export ───────────────────────────────────────────────────────────────────
 
 export async function exportData(
@@ -137,7 +193,7 @@ export async function exportData(
 
   // Fetch ALL rows using pagination to avoid the 1000-row Supabase limit.
   const fetchAll = async (table: string, selectCols: string, orderBy: string) => {
-    let allData: any[] = [];
+    let allData: unknown[] = [];
     let from = 0;
     const step = 1000;
     while (true) {
@@ -148,39 +204,46 @@ export async function exportData(
         .range(from, from + step - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      allData = allData.concat(data);
+      allData = allData.concat(data as unknown[]);
       if (data.length < step) break;
       from += step;
     }
     return allData;
   };
 
-  let allPersons, allRels, allPrivateDetails, allCustomEvents;
+  let allPersons: unknown[] = [];
+  let allRels: unknown[] = [];
+  let allPrivateDetails: unknown[] = [];
+  let allCustomEvents: unknown[] = [];
 
   try {
     allPersons = await fetchAll(
       "persons",
       "id, full_name, gender, birth_year, birth_month, birth_day, death_year, death_month, death_day, death_lunar_year, death_lunar_month, death_lunar_day, is_deceased, is_in_law, birth_order, generation, other_names, avatar_url, note, created_at, updated_at",
-      "created_at"
+      "created_at",
     );
     allRels = await fetchAll(
       "relationships",
       "id, type, person_a, person_b, note, created_at, updated_at",
-      "created_at"
+      "created_at",
     );
     // person_details_private might not have created_at, order by person_id
     allPrivateDetails = await fetchAll(
       "person_details_private",
       "person_id, phone_number, occupation, current_residence",
-      "person_id"
+      "person_id",
     );
     allCustomEvents = await fetchAll(
       "custom_events",
       "id, name, content, event_date, location, created_by",
-      "event_date"
+      "event_date",
     );
-  } catch (error: any) {
-    return { error: "Lỗi tải dữ liệu: " + error.message };
+  } catch (error: unknown) {
+    return {
+      error:
+        "Lỗi tải dữ liệu: " +
+        (error instanceof Error ? error.message : "Không rõ nguyên nhân"),
+    };
   }
 
   let exportPersons = (allPersons ?? []) as PersonExport[];
@@ -281,6 +344,28 @@ export async function importData(
     };
   }
 
+  // Validate all foreign-key references before deleting existing data.
+  // Without this guard, a malformed backup could erase the current database
+  // and only fail later while inserting relationships.
+  const importedPersonIds = new Set(importPayload.persons.map((p) => p.id));
+  const invalidRelationshipRefs = importPayload.relationships
+    .filter((r) => r.person_a !== r.person_b)
+    .filter(
+      (r) =>
+        !importedPersonIds.has(r.person_a) ||
+        !importedPersonIds.has(r.person_b),
+    );
+
+  if (invalidRelationshipRefs.length > 0) {
+    const example = invalidRelationshipRefs[0];
+    return {
+      error:
+        `File có ${invalidRelationshipRefs.length} quan hệ tham chiếu đến thành viên không tồn tại ` +
+        `(ví dụ: ${example.person_a} → ${example.person_b}). ` +
+        "Đã hủy import để bảo toàn dữ liệu hiện tại.",
+    };
+  }
+
   // 1. Xoá custom_events
   const { error: delEventsError } = await supabase
     .from("custom_events")
@@ -324,7 +409,10 @@ export async function importData(
 
   // 5. Insert persons (sanitized — chỉ giữ các field schema hiện tại)
   const CHUNK = 200;
-  const persons = importPayload.persons.map(sanitizePerson);
+  const persons = inferBirthOrdersFromRelationshipOrder(
+    importPayload.persons,
+    importPayload.relationships,
+  ).map(sanitizePerson);
 
   for (let i = 0; i < persons.length; i += CHUNK) {
     const chunk = persons.slice(i, i + CHUNK);

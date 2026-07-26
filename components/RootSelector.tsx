@@ -9,7 +9,7 @@ export default function RootSelector({
   currentRootId,
 }: {
   persons: Person[];
-  currentRootId: string;
+  currentRootId: string | null;
 }) {
   const { setRootId } = useMemberListView();
 
@@ -18,10 +18,12 @@ export default function RootSelector({
       persons={persons}
       selectedId={currentRootId}
       onSelect={(id) => {
-        if (id) setRootId(id);
+        setRootId(id);
       }}
       placeholder="Chọn người..."
       label="Gốc hiển thị"
+      showAllOption={true}
+      allOptionLabel="Tất cả các chi"
       className="w-full sm:w-72"
     />
   );

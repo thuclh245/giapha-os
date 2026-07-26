@@ -16,7 +16,11 @@ export default async function LineagePage() {
     .select("*")
     .order("birth_year", { ascending: true, nullsFirst: false });
 
-  const { data: relsData } = await supabase.from("relationships").select("*");
+  const { data: relsData } = await supabase
+    .from("relationships")
+    .select("*")
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
 
   // Identify "roots" - people with no parents
   const persons = personsData || [];
@@ -62,9 +66,10 @@ export default async function LineagePage() {
                   Thứ tự sinh (Birth Order)
                 </h3>
                 <p className="text-stone-500 text-xs leading-relaxed">
-                  Trong danh sách anh/chị/em cùng cha, sắp xếp theo năm sinh
-                  tăng dần và gán số thứ tự 1, 2, 3... Con dâu/rể không được
-                  tính thứ tự.
+                  Trong danh sách anh/chị/em cùng cha, ưu tiên thứ tự đã có,
+                  sau đó dùng năm sinh. Nếu thiếu năm sinh, hệ thống dùng thứ tự
+                  con xuất hiện trong dữ liệu/import làm phương án thay thế.
+                  Con dâu/rể không được tính thứ tự.
                 </p>
               </div>
             </div>

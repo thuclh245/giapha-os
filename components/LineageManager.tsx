@@ -220,14 +220,18 @@ function computeBirthOrders(
   persons: Person[],
   relationships: Relationship[],
 ): Map<string, number> {
-  // For each parent→children group, sort by birth_year and assign order
-  const parentChildren = new Map<string, Set<string>>();
+  // For each parent→children group, keep relationship order as a fallback.
+  // Priority: existing birth_order -> birth_year -> relationship/import order -> name.
+  const parentChildren = new Map<string, string[]>();
 
   for (const r of relationships) {
     if (r.type === "biological_child" || r.type === "adopted_child") {
       if (!parentChildren.has(r.person_a))
-        parentChildren.set(r.person_a, new Set());
-      parentChildren.get(r.person_a)!.add(r.person_b);
+        parentChildren.set(r.person_a, []);
+      const children = parentChildren.get(r.person_a)!;
+      if (!children.includes(r.person_b)) {
+        children.push(r.person_b);
+      }
     }
   }
 
@@ -235,13 +239,25 @@ function computeBirthOrders(
   const orderMap = new Map<string, number>();
 
   for (const [, childIds] of parentChildren) {
-    // Sort children by birth_year (nulls last), then by name alphabetically
-    const sorted = Array.from(childIds).sort((a, b) => {
+    const sourceOrder = new Map(childIds.map((id, index) => [id, index]));
+    const sorted = [...childIds].sort((a, b) => {
       const pa = personsById.get(a);
       const pb = personsById.get(b);
+
+      const aOrder = pa?.birth_order ?? null;
+      const bOrder = pb?.birth_order ?? null;
+      if (aOrder != null && bOrder != null && aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+
       const aYear = pa?.birth_year ?? Infinity;
       const bYear = pb?.birth_year ?? Infinity;
       if (aYear !== bYear) return aYear - bYear;
+
+      const aSourceOrder = sourceOrder.get(a) ?? Infinity;
+      const bSourceOrder = sourceOrder.get(b) ?? Infinity;
+      if (aSourceOrder !== bSourceOrder) return aSourceOrder - bSourceOrder;
+
       return (pa?.full_name ?? "").localeCompare(pb?.full_name ?? "", "vi");
     });
 

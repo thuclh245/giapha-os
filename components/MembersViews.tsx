@@ -6,7 +6,6 @@ import RootSelector from "@/components/RootSelector";
 import { Person, Relationship } from "@/types";
 import { useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
 
 const FamilyTree = dynamic(() => import("@/components/FamilyTree"));
 const MindmapTree = dynamic(() => import("@/components/MindmapTree"));
@@ -37,8 +36,7 @@ export default function MembersViews({
   relationships,
   canEdit = false,
 }: MembersViewsProps) {
-  const { view: currentView, rootId, setRootId } = useMemberListView();
-  const searchParams = useSearchParams();
+  const { view: currentView, rootId } = useMemberListView();
   const hasRestored = useRef(false);
 
   // Prepare map and roots for tree views
@@ -54,33 +52,60 @@ export default function MembersViews({
         .map((r) => r.person_b),
     );
 
-    let finalRootId = rootId;
+    // Group disconnected data into one representative root per family branch.
+    // The imported Excel has four disconnected branches (Chi 1–4), while
+    // spouses and people without recorded parents create many technical roots.
+    const graph = new Map<string, Set<string>>();
+    relationships.forEach((r) => {
+      if (!graph.has(r.person_a)) graph.set(r.person_a, new Set());
+      if (!graph.has(r.person_b)) graph.set(r.person_b, new Set());
+      graph.get(r.person_a)!.add(r.person_b);
+      graph.get(r.person_b)!.add(r.person_a);
+    });
 
-    // If no rootId is provided, fallback to generation 1 or earliest birth year
-    if (!finalRootId || !pMap.has(finalRootId)) {
-      const rootsFallback = persons.filter((p) => !childIds.has(p.id));
-      if (rootsFallback.length > 0) {
-        const gen1 = rootsFallback.filter((p) => p.generation === 1);
-        const sortByBirthYear = (a: Person, b: Person) => {
-          const ya = a.birth_year ?? Infinity;
-          const yb = b.birth_year ?? Infinity;
-          return ya - yb;
-        };
+    const personIndex = new Map(persons.map((p, index) => [p.id, index]));
+    const visited = new Set<string>();
+    const rootsFallback: Person[] = [];
 
-        if (gen1.length > 0) {
-          finalRootId = gen1.sort(sortByBirthYear)[0].id;
-        } else {
-          finalRootId = rootsFallback.sort(sortByBirthYear)[0].id;
+    for (const person of persons) {
+      if (visited.has(person.id)) continue;
+
+      const component: Person[] = [];
+      const queue = [person.id];
+      visited.add(person.id);
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        const current = pMap.get(id);
+        if (current) component.push(current);
+        for (const neighbor of graph.get(id) ?? []) {
+          if (!visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push(neighbor);
+          }
         }
-      } else if (persons.length > 0) {
-        finalRootId = persons[0].id; // ultimate fallback
       }
+
+      const candidates = component.filter((p) => !childIds.has(p.id));
+      const sortedCandidates = (candidates.length > 0 ? candidates : component)
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.generation ?? Infinity) - (b.generation ?? Infinity) ||
+            (personIndex.get(a.id) ?? 0) - (personIndex.get(b.id) ?? 0),
+        );
+      if (sortedCandidates[0]) rootsFallback.push(sortedCandidates[0]);
     }
 
-    let calculatedRoots: Person[] = [];
-    if (finalRootId && pMap.has(finalRootId)) {
-      calculatedRoots = [pMap.get(finalRootId)!];
-    }
+    // Khi chưa chọn gốc cụ thể, giữ một root đại diện cho mỗi chi.
+    const selectedRoot = rootId && pMap.has(rootId) ? pMap.get(rootId) : null;
+    const calculatedRoots = selectedRoot
+      ? [selectedRoot]
+      : rootsFallback.length > 0
+        ? rootsFallback
+        : persons.length > 0
+          ? [persons[0]]
+          : [];
+    const finalRootId = selectedRoot?.id ?? rootsFallback[0]?.id ?? persons[0]?.id;
 
     return {
       personsMap: pMap,
@@ -91,26 +116,11 @@ export default function MembersViews({
 
   const activeRootId = rootId || defaultRootId;
 
-  // Khôi phục lựa chọn từ localStorage
+  // Không tự khôi phục root cũ: khi không có rootId trên URL,
+  // mặc định phải hiển thị toàn bộ các chi độc lập.
   useEffect(() => {
     if (hasRestored.current) return;
-
-    const urlRootId = searchParams.get("rootId");
-
-    if (!urlRootId) {
-      try {
-        const savedRootId = localStorage.getItem("members_rootId");
-
-        if (!urlRootId && savedRootId && savedRootId !== rootId) {
-          setRootId(savedRootId);
-        }
-      } catch (e) {
-        console.warn("Failed to read from localStorage:", e);
-      }
-    }
-
     hasRestored.current = true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Lưu lựa chọn vào localStorage
@@ -131,9 +141,9 @@ export default function MembersViews({
   return (
     <>
       <main className="flex-1 overflow-auto bg-stone-50/50 flex flex-col">
-        {currentView !== "list" && persons.length > 0 && activeRootId && (
+        {currentView !== "list" && persons.length > 0 && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-2 w-full flex flex-col sm:flex-row flex-wrap items-center sm:justify-between gap-4 relative z-20">
-            <RootSelector persons={persons} currentRootId={activeRootId} />
+            <RootSelector persons={persons} currentRootId={rootId} />
             <div
               id="tree-toolbar-portal"
               className="flex items-center gap-2 flex-wrap justify-center"

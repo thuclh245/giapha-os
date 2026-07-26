@@ -17,7 +17,7 @@ import TreeToolbar from "./TreeToolbar";
 
 import { buildAdjacencyLists, getFilteredTreeData } from "@/utils/treeHelpers";
 
-const DEFAULT_AUTO_COLLAPSE_LEVEL = 2;
+const DEFAULT_AUTO_COLLAPSE_LEVEL = 0;
 
 export default function FamilyTree({
   personsMap,
@@ -181,10 +181,10 @@ export default function FamilyTree({
     };
 
     roots.forEach((root) => walk(root.id, new Set(), 0));
-    setCollapsedNodes(autoCollapsed);
-
-    // Double rAF: wait for React to re-render with collapsed state, then center
+    // Defer the state update and centering until the next frame so the tree
+    // can render the new branch layout without a cascading effect update.
     const raf = requestAnimationFrame(() => {
+      setCollapsedNodes(autoCollapsed);
       requestAnimationFrame(centerTree);
     });
     return () => cancelAnimationFrame(raf);
@@ -410,6 +410,38 @@ export default function FamilyTree({
           border-left: 2px solid #d6d3d1;
           width: 0; height: 30px;
         }
+
+        .tree-branches {
+          display: flex;
+          align-items: flex-start;
+          justify-content: center;
+          gap: 48px;
+          min-width: max-content;
+          padding: 24px 48px 64px;
+        }
+
+        .tree-branch {
+          flex: 0 0 auto;
+          min-width: 220px;
+          padding: 0 16px;
+          border-left: 1px solid #e7e5e4;
+          border-right: 1px solid #e7e5e4;
+          border-radius: 24px;
+        }
+
+        .tree-branch-label {
+          width: fit-content;
+          margin: 0 auto 18px;
+          padding: 8px 18px;
+          border: 1px solid #fbbf24;
+          border-radius: 9999px;
+          background: #fffbeb;
+          color: #92400e;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+        }
       `,
           }}
         />
@@ -421,19 +453,20 @@ export default function FamilyTree({
       */}
         <div
           id="export-container"
-          className={`w-max min-w-full mx-auto p-4 css-tree transition-all duration-200 ${isDragging ? "opacity-90" : ""}`}
+          className={`w-max min-w-full mx-auto css-tree transition-all duration-200 ${isDragging ? "opacity-90" : ""}`}
           style={{
             transform: `scale(${scale})`,
             transformOrigin: "top center",
           }}
         >
-          <ul>
-            {roots.map((root) => (
-              <React.Fragment key={root.id}>
-                {renderTreeNode(root.id)}
-              </React.Fragment>
+          <div className="tree-branches">
+            {roots.map((root, index) => (
+              <section className="tree-branch" key={root.id}>
+                <div className="tree-branch-label">Chi thứ {index + 1}</div>
+                <ul>{renderTreeNode(root.id)}</ul>
+              </section>
             ))}
-          </ul>
+          </div>
         </div>
       </div>
     </div>

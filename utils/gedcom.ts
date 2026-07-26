@@ -388,6 +388,10 @@ export function parseGedcom(gedcom: string): {
     });
   }
 
+  const personsById = new Map(
+    persons.filter((p) => !!p.id).map((p) => [p.id!, p]),
+  );
+
   // Parse Families
   for (const record of records.filter((r) => r.type === "FAM")) {
     let husb = null;
@@ -415,6 +419,13 @@ export function parseGedcom(gedcom: string): {
         person_b: wife,
       });
     }
+
+    children.forEach((childId, index) => {
+      const child = personsById.get(childId);
+      if (child && child.birth_order == null) {
+        child.birth_order = index + 1;
+      }
+    });
 
     // Assigning children to both parents
     for (const childId of children) {
