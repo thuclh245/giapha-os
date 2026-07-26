@@ -60,6 +60,8 @@ export interface Relationship {
   person_a: string; // UUID
   person_b: string; // UUID
   note?: string | null;
+  /** UI-only marker for a relationship recovered from imported person data. */
+  is_inferred?: boolean;
   created_at: string;
   updated_at: string;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { Person } from "@/types";
+import { getLineageBranch } from "@/utils/lineage";
 import { getAvatarBg } from "@/utils/styleHelprs";
 import Image from "next/image";
 import { useMemberListView } from "@/context/MemberListContext";
@@ -15,6 +16,7 @@ export default function PersonCard({ person }: PersonCardProps) {
   const { setMemberModalId } = useMemberListView();
 
   const isDeceased = person.is_deceased;
+  const branch = getLineageBranch(person);
 
   const getGenderStyle = (gender: string) => {
     if (gender === "male") return "bg-sky-100 text-sky-600";
@@ -90,9 +92,15 @@ export default function PersonCard({ person }: PersonCardProps) {
           </p>
           {(isDeceased ||
             person.is_in_law ||
+            branch != null ||
             person.birth_order != null ||
             person.generation != null) && (
             <div className="flex flex-wrap items-center gap-1.5 shrink-0 mt-2">
+              {branch != null && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] sm:text-[11px] font-bold bg-stone-50 text-stone-700 border border-stone-200/60 uppercase tracking-widest shadow-xs">
+                  Chi thứ {branch}
+                </span>
+              )}
               {person.is_in_law && (
                 <span
                   className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] sm:text-[11px] font-bold uppercase tracking-widest shadow-xs border ${

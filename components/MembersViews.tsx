@@ -4,6 +4,10 @@ import { useMemberListView } from "@/context/MemberListContext";
 import MemberList from "@/components/MemberList";
 import RootSelector from "@/components/RootSelector";
 import { Person, Relationship } from "@/types";
+import {
+  getFamilyRoots,
+  normalizeFamilyRelationships,
+} from "@/utils/treeHelpers";
 import { useEffect, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 
@@ -40,77 +44,14 @@ export default function MembersViews({
   const hasRestored = useRef(false);
 
   // Prepare map and roots for tree views
-  const { personsMap, roots, defaultRootId } = useMemo(() => {
-    const pMap = new Map<string, Person>();
-    persons.forEach((p) => pMap.set(p.id, p));
-
-    const childIds = new Set(
-      relationships
-        .filter(
-          (r) => r.type === "biological_child" || r.type === "adopted_child",
-        )
-        .map((r) => r.person_b),
-    );
-
-    // Group disconnected data into one representative root per family branch.
-    // The imported Excel has four disconnected branches (Chi 1–4), while
-    // spouses and people without recorded parents create many technical roots.
-    const graph = new Map<string, Set<string>>();
-    relationships.forEach((r) => {
-      if (!graph.has(r.person_a)) graph.set(r.person_a, new Set());
-      if (!graph.has(r.person_b)) graph.set(r.person_b, new Set());
-      graph.get(r.person_a)!.add(r.person_b);
-      graph.get(r.person_b)!.add(r.person_a);
-    });
-
-    const personIndex = new Map(persons.map((p, index) => [p.id, index]));
-    const visited = new Set<string>();
-    const rootsFallback: Person[] = [];
-
-    for (const person of persons) {
-      if (visited.has(person.id)) continue;
-
-      const component: Person[] = [];
-      const queue = [person.id];
-      visited.add(person.id);
-      while (queue.length > 0) {
-        const id = queue.shift()!;
-        const current = pMap.get(id);
-        if (current) component.push(current);
-        for (const neighbor of graph.get(id) ?? []) {
-          if (!visited.has(neighbor)) {
-            visited.add(neighbor);
-            queue.push(neighbor);
-          }
-        }
-      }
-
-      const candidates = component.filter((p) => !childIds.has(p.id));
-      const sortedCandidates = (candidates.length > 0 ? candidates : component)
-        .slice()
-        .sort(
-          (a, b) =>
-            (a.generation ?? Infinity) - (b.generation ?? Infinity) ||
-            (personIndex.get(a.id) ?? 0) - (personIndex.get(b.id) ?? 0),
-        );
-      if (sortedCandidates[0]) rootsFallback.push(sortedCandidates[0]);
-    }
-
-    // Khi chưa chọn gốc cụ thể, giữ một root đại diện cho mỗi chi.
-    const selectedRoot = rootId && pMap.has(rootId) ? pMap.get(rootId) : null;
-    const calculatedRoots = selectedRoot
-      ? [selectedRoot]
-      : rootsFallback.length > 0
-        ? rootsFallback
-        : persons.length > 0
-          ? [persons[0]]
-          : [];
-    const finalRootId = selectedRoot?.id ?? rootsFallback[0]?.id ?? persons[0]?.id;
-
+  const { personsMap, roots, defaultRootId, familyRelationships } = useMemo(() => {
+    const tree = getFamilyRoots(persons, relationships, rootId);
     return {
-      personsMap: pMap,
-      roots: calculatedRoots,
-      defaultRootId: finalRootId,
+      ...tree,
+      familyRelationships: normalizeFamilyRelationships(
+        relationships,
+        tree.personsMap,
+      ),
     };
   }, [persons, relationships, rootId]);
 
@@ -155,7 +96,7 @@ export default function MembersViews({
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative z-10">
             <MemberList
               initialPersons={persons}
-              relationships={relationships}
+              relationships={familyRelationships}
               canEdit={canEdit}
             />
           </div>
@@ -165,7 +106,7 @@ export default function MembersViews({
           {currentView === "tree" && (
             <FamilyTree
               personsMap={personsMap}
-              relationships={relationships}
+              relationships={familyRelationships}
               roots={roots}
               canEdit={canEdit}
             />
@@ -173,7 +114,7 @@ export default function MembersViews({
           {currentView === "mindmap" && (
             <MindmapTree
               personsMap={personsMap}
-              relationships={relationships}
+              relationships={familyRelationships}
               roots={roots}
               canEdit={canEdit}
             />
@@ -181,7 +122,7 @@ export default function MembersViews({
           {currentView === "bubble" && (
             <BubbleMapTree
               personsMap={personsMap}
-              relationships={relationships}
+              relationships={familyRelationships}
               roots={roots}
               canEdit={canEdit}
             />

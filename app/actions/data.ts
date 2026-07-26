@@ -2,6 +2,7 @@
 
 import { Relationship } from "@/types";
 import { getIsAdmin, getSupabase } from "@/utils/supabase/queries";
+import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -73,6 +74,13 @@ interface BackupPayload {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string | null | undefined) {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+
 // Các field được phép insert vào bảng persons (loại bỏ created_at/updated_at)
 function sanitizePerson(
   p: PersonExport,
@@ -120,6 +128,49 @@ function sanitizeCustomEvent(
     content: e.content ?? null,
     event_date: e.event_date,
     location: e.location ?? null,
+  };
+}
+
+function buildPersonIdMap(persons: PersonExport[]) {
+  const idMap = new Map<string, string>();
+
+  for (const person of persons) {
+    idMap.set(person.id, isUuid(person.id) ? person.id : randomUUID());
+  }
+
+  return idMap;
+}
+
+function remapImportPayloadIds(
+  importPayload: BackupPayload | {
+    persons: PersonExport[];
+    relationships: Relationship[];
+    person_details_private?: PersonDetailsPrivateExport[];
+    custom_events?: CustomEventExport[];
+  },
+) {
+  const personIdMap = buildPersonIdMap(importPayload.persons);
+
+  return {
+    persons: importPayload.persons.map((person) => ({
+      ...person,
+      id: personIdMap.get(person.id)!,
+    })),
+    relationships: importPayload.relationships.map((relationship) => ({
+      ...relationship,
+      person_a: personIdMap.get(relationship.person_a) ?? relationship.person_a,
+      person_b: personIdMap.get(relationship.person_b) ?? relationship.person_b,
+    })),
+    person_details_private: (importPayload.person_details_private ?? []).map(
+      (details) => ({
+        ...details,
+        person_id: personIdMap.get(details.person_id) ?? details.person_id,
+      }),
+    ),
+    custom_events: (importPayload.custom_events ?? []).map((event) => ({
+      ...event,
+      id: isUuid(event.id) ? event.id : randomUUID(),
+    })),
   };
 }
 
@@ -344,6 +395,18 @@ export async function importData(
     };
   }
 
+  const duplicatePersonIds = importPayload.persons
+    .map((p) => p.id)
+    .filter((id, index, ids) => ids.indexOf(id) !== index);
+
+  if (duplicatePersonIds.length > 0) {
+    return {
+      error:
+        `File có mã thành viên bị trùng (${duplicatePersonIds[0]}). ` +
+        "Đã hủy import để bảo toàn dữ liệu hiện tại.",
+    };
+  }
+
   // Validate all foreign-key references before deleting existing data.
   // Without this guard, a malformed backup could erase the current database
   // and only fail later while inserting relationships.
@@ -365,6 +428,8 @@ export async function importData(
         "Đã hủy import để bảo toàn dữ liệu hiện tại.",
     };
   }
+
+  const normalizedPayload = remapImportPayloadIds(importPayload);
 
   // 1. Xoá custom_events
   const { error: delEventsError } = await supabase
@@ -410,8 +475,8 @@ export async function importData(
   // 5. Insert persons (sanitized — chỉ giữ các field schema hiện tại)
   const CHUNK = 200;
   const persons = inferBirthOrdersFromRelationshipOrder(
-    importPayload.persons,
-    importPayload.relationships,
+    normalizedPayload.persons,
+    normalizedPayload.relationships,
   ).map(sanitizePerson);
 
   for (let i = 0; i < persons.length; i += CHUNK) {
@@ -425,7 +490,7 @@ export async function importData(
 
   // 6. Insert relationships (stripped of id/created_at to avoid conflicts)
   // Filter out self-relationships to avoid "no_self_relationship" constraint violation
-  const relationships = importPayload.relationships
+  const relationships = normalizedPayload.relationships
     .filter((r) => r.person_a !== r.person_b)
     .map(sanitizeRelationship);
 
@@ -440,7 +505,7 @@ export async function importData(
 
   // 7. Insert person_details_private (if present in payload)
   let privateDetailsCount = 0;
-  const privateDetails = importPayload.person_details_private ?? [];
+  const privateDetails = normalizedPayload.person_details_private;
   if (privateDetails.length > 0) {
     for (let i = 0; i < privateDetails.length; i += CHUNK) {
       const chunk = privateDetails.slice(i, i + CHUNK);
@@ -457,9 +522,7 @@ export async function importData(
 
   // 8. Insert custom_events (if present in payload, strip created_by)
   let customEventsCount = 0;
-  const customEvents = (importPayload.custom_events ?? []).map(
-    sanitizeCustomEvent,
-  );
+  const customEvents = normalizedPayload.custom_events.map(sanitizeCustomEvent);
   if (customEvents.length > 0) {
     for (let i = 0; i < customEvents.length; i += CHUNK) {
       const chunk = customEvents.slice(i, i + CHUNK);

@@ -10,6 +10,7 @@ import React, {
 
 import { usePanZoom } from "@/hooks/usePanZoom";
 import { Person, Relationship } from "@/types";
+import { getLineageBranch } from "@/utils/lineage";
 import { Minus, Plus } from "lucide-react";
 import { useMemberListView } from "@/context/MemberListContext";
 import FamilyNodeCard from "./FamilyNodeCard";
@@ -18,6 +19,43 @@ import TreeToolbar from "./TreeToolbar";
 import { buildAdjacencyLists, getFilteredTreeData } from "@/utils/treeHelpers";
 
 const DEFAULT_AUTO_COLLAPSE_LEVEL = 0;
+
+interface BranchGroup {
+  key: string;
+  branch: number | null;
+  roots: Person[];
+}
+
+function groupRootsByLineageBranch(roots: Person[]): BranchGroup[] {
+  const groups = new Map<string, BranchGroup>();
+
+  roots.forEach((root) => {
+    const branch = getLineageBranch(root);
+    const key = branch != null ? `chi-${branch}` : `root-${root.id}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        branch,
+        roots: [],
+      });
+    }
+
+    groups.get(key)!.roots.push(root);
+  });
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.branch != null || b.branch != null) {
+      return (a.branch ?? Infinity) - (b.branch ?? Infinity);
+    }
+
+    return roots.indexOf(a.roots[0]) - roots.indexOf(b.roots[0]);
+  });
+}
+
+function getBranchLabel(group: BranchGroup, index: number) {
+  return group.branch != null ? `Chi thứ ${group.branch}` : `Nhánh ${index + 1}`;
+}
 
 export default function FamilyTree({
   personsMap,
@@ -145,6 +183,8 @@ export default function FamilyTree({
     () => buildAdjacencyLists(relationships, personsMap),
     [relationships, personsMap],
   );
+
+  const branchGroups = useMemo(() => groupRootsByLineageBranch(roots), [roots]);
 
   const getTreeData = (personId: string) =>
     getFilteredTreeData(personId, personsMap, adj, {
@@ -389,6 +429,15 @@ export default function FamilyTree({
           display: none;
         }
 
+        .css-tree .tree-root-list > li {
+          padding-top: 0;
+        }
+
+        .css-tree .tree-root-list > li::before,
+        .css-tree .tree-root-list > li::after {
+          display: none;
+        }
+
         /* Remove left connector from first child and right connector from last child */
         .css-tree li:first-child::before, .css-tree li:last-child::after {
           border: 0 none;
@@ -460,10 +509,18 @@ export default function FamilyTree({
           }}
         >
           <div className="tree-branches">
-            {roots.map((root, index) => (
-              <section className="tree-branch" key={root.id}>
-                <div className="tree-branch-label">Chi thứ {index + 1}</div>
-                <ul>{renderTreeNode(root.id)}</ul>
+            {branchGroups.map((group, index) => (
+              <section className="tree-branch" key={group.key}>
+                <div className="tree-branch-label">
+                  {getBranchLabel(group, index)}
+                </div>
+                <div className="flex flex-wrap items-start justify-center gap-12">
+                  {group.roots.map((root) => (
+                    <ul key={root.id} className="tree-root-list">
+                      {renderTreeNode(root.id)}
+                    </ul>
+                  ))}
+                </div>
               </section>
             ))}
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { Person } from "@/types";
+import { getLineageBranch } from "@/utils/lineage";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown, Database, Search } from "lucide-react";
 import Image from "next/image";
@@ -203,6 +204,16 @@ export default function PersonSelector({
                 <div className="space-y-0.5">
                   {filteredPersons.map((person) => {
                     const isSelected = person.id === selectedId;
+                    const branch = getLineageBranch(person);
+                    const lineageMeta = [
+                      branch != null ? `Chi thứ ${branch}` : null,
+                      person.generation != null
+                        ? `Đời thứ ${person.generation}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
+
                     return (
                       <button
                         key={person.id}
@@ -254,9 +265,9 @@ export default function PersonSelector({
                               </span>
                             ) : null}
                           </p>
-                          {person.generation != null && (
+                          {lineageMeta && (
                             <p className="text-[10px] text-stone-400 font-medium">
-                              Đời thứ {person.generation}
+                              {lineageMeta}
                             </p>
                           )}
                         </div>
